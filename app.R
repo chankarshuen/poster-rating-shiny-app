@@ -39,6 +39,26 @@ db_insert_rating <- function(poster_number, content_score, presentation_score, r
   invisible(resp)
 }
 
+db_update_rating <- function(poster_number, content_score, presentation_score, rater_id) {
+  req <- request(api_url("ratings")) |>
+    req_headers(
+      apikey = SUPABASE_SERVICE_KEY,
+      Authorization = paste("Bearer", SUPABASE_SERVICE_KEY),
+      Prefer = "return=minimal"
+    ) |>
+    req_url_query(
+      poster_number = paste0("eq.", as.integer(poster_number)),
+      rater_id = paste0("eq.", as.character(rater_id))
+    ) |>
+    req_method("PATCH") |>
+    req_body_json(list(
+      content_score = as.integer(content_score),
+      presentation_score = as.integer(presentation_score)
+    ))
+  resp <- req_perform(req)
+  invisible(resp)
+}
+
 db_get_ratings <- function() {
   req <- request(api_url("ratings")) |>
     req_headers(
@@ -168,6 +188,7 @@ server <- function(input, output, session) {
   submitted <- reactiveVal(FALSE)
   submit_message <- reactiveVal(NULL)
   admin_ok <- reactiveVal(FALSE)
+  pending_override <- reactiveVal(NULL)
 
   observe({
     query(parseQueryString(session$clientData$url_search %||% ""))
@@ -269,14 +290,53 @@ server <- function(input, output, session) {
     }, error = function(e) {
       msg <- conditionMessage(e)
       if (grepl("409|duplicate|23505", msg, ignore.case = TRUE)) {
-        submit_message("A rating for this poster has already been submitted from this browser.")
-        submitted(TRUE)
+        pending_override(list(
+          poster_number = poster(),
+          content_score = as.integer(input$content_score),
+          presentation_score = as.integer(input$presentation_score),
+          rater_id = input$rater_id
+        ))
+        showModal(modalDialog(
+          title = "You already rated this poster",
+          p("A rating for this poster has already been submitted from this browser."),
+          p("Would you like to replace your previous rating with these new scores?"),
+          footer = tagList(
+            modalButton("Keep previous rating"),
+            actionButton("confirm_override_rating", "Replace previous rating",
+                         class = "btn-primary")
+          ),
+          easyClose = FALSE
+        ))
       } else {
         output$rating_message <- renderUI(
           div(class = "errorbox",
               "The rating could not be saved. Please check your connection and try again.")
         )
       }
+    })
+  })
+
+  observeEvent(input$confirm_override_rating, {
+    rating <- pending_override()
+    req(!is.null(rating))
+    removeModal()
+
+    tryCatch({
+      db_update_rating(
+        rating$poster_number,
+        rating$content_score,
+        rating$presentation_score,
+        rating$rater_id
+      )
+      pending_override(NULL)
+      submit_message("Your previous rating for this poster has been replaced with the new rating.")
+      submitted(TRUE)
+    }, error = function(e) {
+      pending_override(NULL)
+      output$rating_message <- renderUI(
+        div(class = "errorbox",
+            "The previous rating could not be replaced. Please check your connection and try again.")
+      )
     })
   })
 
