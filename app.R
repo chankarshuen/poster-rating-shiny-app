@@ -153,9 +153,9 @@ server <- function(input, output, session) {
   submit_message <- reactiveVal(NULL)
   admin_ok <- reactiveVal(FALSE)
 
-  session$onFlushed(function() {
+  observe({
     query(parseQueryString(session$clientData$url_search %||% ""))
-  }, once = TRUE)
+  })
 
   is_admin <- reactive({
     identical(as.character(query()$admin %||% ""), "1")
