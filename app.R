@@ -91,6 +91,41 @@ db_clear_ratings <- function() {
   invisible(resp)
 }
 
+
+db_get_admin_password <- function() {
+  req <- request(api_url("app_settings")) |>
+    req_headers(
+      apikey = SUPABASE_SERVICE_KEY,
+      Authorization = paste("Bearer", SUPABASE_SERVICE_KEY)
+    ) |>
+    req_url_query(select = "value", key = "eq.admin_password", limit = "1")
+  resp <- req_perform(req)
+  out <- resp_body_json(resp, simplifyVector = TRUE)
+  if (length(out) == 0 || nrow(as.data.frame(out)) == 0) return("")
+  as.character(as.data.frame(out)$value[1])
+}
+
+db_set_admin_password <- function(new_password) {
+  # Upsert the single admin_password setting.
+  req <- request(api_url("app_settings")) |>
+    req_headers(
+      apikey = SUPABASE_SERVICE_KEY,
+      Authorization = paste("Bearer", SUPABASE_SERVICE_KEY),
+      Prefer = "resolution=merge-duplicates,return=minimal"
+    ) |>
+    req_url_query(on_conflict = "key") |>
+    req_body_json(list(key = "admin_password", value = as.character(new_password)))
+  resp <- req_perform(req)
+  invisible(resp)
+}
+
+current_admin_password <- function() {
+  # Prefer the persistent Supabase password after one has been set.
+  # Fall back to ADMIN_PASSWORD from Connect Cloud for initial setup/recovery.
+  stored <- tryCatch(db_get_admin_password(), error = function(e) "")
+  if (nzchar(stored)) stored else ADMIN_PASSWORD
+}
+
 make_summary <- function(dat) {
   base <- data.frame(poster_number = seq_len(N_POSTERS))
   if (nrow(dat) == 0) {
@@ -220,6 +255,7 @@ server <- function(input, output, session) {
           actionButton("refresh_admin", "Refresh results"),
           downloadButton("download_csv", "Download raw ratings (.csv)"),
           actionButton("clear_database", "Clear database", class = "btn-danger"),
+          actionButton("change_admin_password", "Change administrator password"),
           hr(),
           h3("Summary"),
           tableOutput("summary_table")
@@ -340,12 +376,60 @@ server <- function(input, output, session) {
     })
   })
 
+  observeEvent(input$change_admin_password, {
+    req(admin_ok())
+    showModal(modalDialog(
+      title = "Change administrator password",
+      passwordInput("current_password_change", "Current password"),
+      passwordInput("new_password_change", "New password"),
+      passwordInput("confirm_password_change", "Confirm new password"),
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("save_admin_password", "Change password", class = "btn-primary")
+      ),
+      easyClose = FALSE
+    ))
+  })
+
+  observeEvent(input$save_admin_password, {
+    req(admin_ok())
+
+    current <- input$current_password_change %||% ""
+    new_pw <- input$new_password_change %||% ""
+    confirm_pw <- input$confirm_password_change %||% ""
+
+    if (!identical(current, current_admin_password())) {
+      showNotification("Current password is incorrect.", type = "error", duration = 5)
+      return()
+    }
+    if (nchar(new_pw) < 8) {
+      showNotification("New password must be at least 8 characters.", type = "error", duration = 5)
+      return()
+    }
+    if (!identical(new_pw, confirm_pw)) {
+      showNotification("The new passwords do not match.", type = "error", duration = 5)
+      return()
+    }
+
+    tryCatch({
+      db_set_admin_password(new_pw)
+      removeModal()
+      showNotification("Administrator password changed successfully.",
+                       type = "message", duration = 5)
+    }, error = function(e) {
+      showNotification(
+        paste("Password could not be changed:", conditionMessage(e)),
+        type = "error", duration = NULL
+      )
+    })
+  })
+
   observeEvent(input$admin_login, {
     if (!nzchar(ADMIN_PASSWORD)) {
       output$admin_login_message <- renderUI(
         div(class = "errorbox", "ADMIN_PASSWORD has not been configured.")
       )
-    } else if (identical(input$admin_password, ADMIN_PASSWORD)) {
+    } else if (identical(input$admin_password, current_admin_password())) {
       admin_ok(TRUE)
     } else {
       output$admin_login_message <- renderUI(
