@@ -9,7 +9,10 @@ N_POSTERS <- 20L
 SUPABASE_URL <- Sys.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY <- Sys.getenv("SUPABASE_SERVICE_KEY")
 ADMIN_PASSWORD <- Sys.getenv("ADMIN_PASSWORD")
-DEFAULT_BASE_URL <- Sys.getenv("APP_BASE_URL")
+DEFAULT_BASE_URL <- Sys.getenv(
+  "APP_BASE_URL",
+  unset = "https://01a0f2a8-a443-e9d9-d3ed-4c4677502232.share.connect.posit.cloud/"
+)
 
 db_ready <- function() {
   nzchar(SUPABASE_URL) && nzchar(SUPABASE_SERVICE_KEY)
