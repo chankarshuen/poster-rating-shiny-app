@@ -370,8 +370,30 @@ server <- function(input, output, session) {
         par(mfrow = c(2, 2), mar = c(2.5, 2.5, 4.5, 2.5))
         for (p in page_start:min(page_start + 3, N_POSTERS)) {
           url <- paste0(base, sep, "poster=", p)
+          # qrcode::qr_code() returns a logical QR matrix. Draw the matrix
+          # directly with base graphics rather than relying on plot.qr_code(),
+          # which can fail on some hosted graphics devices/package versions.
           code <- qrcode::qr_code(url)
-          plot(code)
+          qr <- as.matrix(code)
+          nr <- nrow(qr)
+          nc <- ncol(qr)
+
+          par(xaxs = "i", yaxs = "i")
+          plot.new()
+          plot.window(xlim = c(0, nc), ylim = c(0, nr), asp = 1)
+          rect(0, 0, nc, nr, col = "white", border = NA)
+
+          # Draw black QR modules. Reverse the row direction so the QR code
+          # is oriented the same way as the matrix returned by qrcode.
+          black <- which(qr, arr.ind = TRUE)
+          if (nrow(black) > 0) {
+            xleft <- black[, "col"] - 1
+            xright <- black[, "col"]
+            ybottom <- nr - black[, "row"]
+            ytop <- nr - black[, "row"] + 1
+            rect(xleft, ybottom, xright, ytop, col = "black", border = NA)
+          }
+
           title(main = paste("POSTER", p), cex.main = 2.2, font.main = 2)
           mtext("Scan to rate", side = 1, line = 0.5, cex = 1)
         }
