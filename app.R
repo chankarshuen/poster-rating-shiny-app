@@ -55,6 +55,19 @@ db_get_ratings <- function() {
   as.data.frame(out, stringsAsFactors = FALSE)
 }
 
+db_clear_ratings <- function() {
+  req <- request(api_url("ratings")) |>
+    req_headers(
+      apikey = SUPABASE_SERVICE_KEY,
+      Authorization = paste("Bearer", SUPABASE_SERVICE_KEY),
+      Prefer = "return=minimal"
+    ) |>
+    req_url_query(id = "gt.0") |>
+    req_method("DELETE")
+  resp <- req_perform(req)
+  invisible(resp)
+}
+
 make_summary <- function(dat) {
   base <- data.frame(poster_number = seq_len(N_POSTERS))
   if (nrow(dat) == 0) {
@@ -182,6 +195,7 @@ server <- function(input, output, session) {
           p("Content and Presentation are weighted equally. Overall = (Content + Presentation) / 2."),
           actionButton("refresh_admin", "Refresh results"),
           downloadButton("download_csv", "Download raw ratings (.csv)"),
+          actionButton("clear_database", "Clear database", class = "btn-danger"),
           hr(),
           h3("Summary"),
           tableOutput("summary_table")
@@ -277,8 +291,43 @@ server <- function(input, output, session) {
     }
   })
 
+  database_version <- reactiveVal(0L)
+
+  observeEvent(input$clear_database, {
+    req(admin_ok())
+    showModal(modalDialog(
+      title = "Clear entire rating database?",
+      p("This will permanently delete ALL poster ratings."),
+      p(strong("This cannot be undone.")),
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("confirm_clear_database", "Yes, delete all ratings",
+                     class = "btn-danger")
+      ),
+      easyClose = FALSE
+    ))
+  })
+
+  observeEvent(input$confirm_clear_database, {
+    req(admin_ok())
+    removeModal()
+    if (!db_ready()) {
+      showNotification("Database connection is not configured.", type = "error")
+      return()
+    }
+    tryCatch({
+      db_clear_ratings()
+      database_version(database_version() + 1L)
+      showNotification("All ratings have been deleted.",
+                       type = "message", duration = 5)
+    }, error = function(e) {
+      showNotification(paste("Error clearing database:", conditionMessage(e)),
+                       type = "error", duration = NULL)
+    })
+  })
+
   ratings_data <- eventReactive(
-    list(admin_ok(), input$refresh_admin),
+    list(admin_ok(), input$refresh_admin, database_version()),
     {
       req(admin_ok())
       if (!db_ready()) return(data.frame())
