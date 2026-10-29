@@ -126,6 +126,60 @@ current_admin_password <- function() {
   if (nzchar(stored)) stored else ADMIN_PASSWORD
 }
 
+# Poster titles/authors are stored in a persistent Supabase table named poster_info.
+# Expected columns: poster_number (integer primary key), title (text), authors (text).
+db_get_poster_info <- function() {
+  req <- request(api_url("poster_info")) |>
+    req_headers(
+      apikey = SUPABASE_SERVICE_KEY,
+      Authorization = paste("Bearer", SUPABASE_SERVICE_KEY)
+    ) |>
+    req_url_query(select = "poster_number,title,authors", order = "poster_number.asc")
+  resp <- req_perform(req)
+  out <- resp_body_json(resp, simplifyVector = TRUE)
+  if (length(out) == 0) {
+    return(data.frame(poster_number = integer(), title = character(),
+                      authors = character(), stringsAsFactors = FALSE))
+  }
+  as.data.frame(out, stringsAsFactors = FALSE)
+}
+
+db_save_poster_info <- function(poster_number, title, authors) {
+  req <- request(api_url("poster_info")) |>
+    req_headers(
+      apikey = SUPABASE_SERVICE_KEY,
+      Authorization = paste("Bearer", SUPABASE_SERVICE_KEY),
+      Prefer = "resolution=merge-duplicates,return=minimal"
+    ) |>
+    req_url_query(on_conflict = "poster_number") |>
+    req_body_json(list(
+      poster_number = as.integer(poster_number),
+      title = as.character(title),
+      authors = as.character(authors)
+    ))
+  req_perform(req)
+}
+
+blank_poster_info <- function() {
+  data.frame(
+    poster_number = seq_len(N_POSTERS),
+    title = rep("", N_POSTERS),
+    authors = rep("", N_POSTERS),
+    stringsAsFactors = FALSE
+  )
+}
+
+get_all_poster_info <- function() {
+  base <- blank_poster_info()
+  if (!db_ready()) return(base)
+  dat <- tryCatch(db_get_poster_info(), error = function(e) data.frame())
+  if (nrow(dat) == 0) return(base)
+  out <- merge(base["poster_number"], dat, by = "poster_number", all.x = TRUE)
+  out$title[is.na(out$title)] <- ""
+  out$authors[is.na(out$authors)] <- ""
+  out
+}
+
 make_summary <- function(dat) {
   base <- data.frame(poster_number = seq_len(N_POSTERS))
   if (nrow(dat) == 0) {
@@ -188,6 +242,17 @@ ui <- fluidPage(
       .thanks { text-align:center; padding:30px 10px; }
       .thanks h2 { color:#237a3b; }
       .errorbox { background:#fff3cd; border-left:5px solid #d39e00; padding:12px; margin:14px 0; }
+      .poster-list-item { display:block; text-decoration:none !important; color:#222 !important;
+                          border:1px solid #ddd; border-radius:12px; padding:16px; margin:10px 0; background:white; }
+      .poster-list-item:hover { border-color:#1769aa; box-shadow:0 2px 8px rgba(0,0,0,.08); }
+      .poster-list-number { font-size:.9rem; font-weight:700; color:#1769aa; text-transform:uppercase; }
+      .poster-list-title { font-size:1.15rem; font-weight:700; margin-top:3px; }
+      .poster-list-authors { color:#555; margin-top:4px; }
+      .poster-list-action { color:#1769aa; font-weight:700; margin-top:9px; }
+      .poster-meta-title { font-size:1.3rem; font-weight:700; margin-top:-10px; }
+      .poster-meta-authors { color:#555; margin-top:4px; margin-bottom:16px; }
+      .admin-poster-row { border-top:1px solid #eee; padding:12px 0 4px; }
+      .back-link { display:block; text-align:center; margin-top:18px; font-weight:700; }
       table { background:white; }
       @media (max-width:430px) {
         .container-fluid { padding:10px; }
@@ -238,6 +303,13 @@ server <- function(input, output, session) {
     if (is.na(p) || p < 1 || p > N_POSTERS) NA_integer_ else p
   })
 
+  # Moving between posters starts a fresh rating screen in the same browser session.
+  observeEvent(poster(), {
+    submitted(FALSE)
+    submit_message(NULL)
+    pending_override(NULL)
+  }, ignoreInit = TRUE)
+
   output$page <- renderUI({
     if (is_admin()) {
       if (!admin_ok()) {
@@ -261,20 +333,42 @@ server <- function(input, output, session) {
           tableOutput("summary_table")
         ),
         div(class = "card",
+          h3("Poster Information"),
+          p("Enter the title and author(s) for each poster. These appear on the public poster directory and rating pages."),
+          uiOutput("poster_info_editor"),
+          actionButton("save_poster_info", "Save Poster Information", class = "btn-primary"),
+          uiOutput("poster_info_save_message")
+        ),
+        div(class = "card",
           h3("QR codes"),
           p("Enter the public rating-app URL. The QR generator adds ?poster=1 through ?poster=20."),
           textInput("base_url", "Public app URL", value = DEFAULT_BASE_URL,
                     placeholder = "https://your-app.share.connect.posit.cloud"),
-          downloadButton("download_qr_pdf", "Download 20 QR codes (.pdf)")
+          downloadButton("download_directory_qr_pdf", "Download All Posters QR code (.pdf)"),
+          tags$br(), tags$br(),
+          downloadButton("download_qr_pdf", "Download 20 individual QR codes (.pdf)")
         )
       ))
     }
 
     if (is.na(poster())) {
+      info <- get_all_poster_info()
+      items <- lapply(seq_len(N_POSTERS), function(p) {
+        row <- info[info$poster_number == p, , drop = FALSE]
+        ttl <- if (nrow(row) && nzchar(trimws(row$title[1]))) row$title[1] else paste("Poster", p)
+        auth <- if (nrow(row) && nzchar(trimws(row$authors[1]))) row$authors[1] else ""
+        tags$a(
+          href = paste0("?poster=", p), class = "poster-list-item",
+          div(class = "poster-list-number", paste("Poster", p)),
+          div(class = "poster-list-title", ttl),
+          if (nzchar(auth)) div(class = "poster-list-authors", auth),
+          div(class = "poster-list-action", "Rate this poster ->")
+        )
+      })
       return(div(class = "card",
         h2("Poster Symposium Rating"),
-        div(class = "errorbox",
-            "This link does not specify a valid poster number. Please scan the QR code displayed next to a poster.")
+        p("Select a poster below to submit or update your rating."),
+        do.call(tagList, items)
       ))
     }
 
@@ -282,13 +376,21 @@ server <- function(input, output, session) {
       return(div(class = "card thanks",
         h2("Rating submitted"),
         h3(paste("Poster", poster())),
-        p(submit_message() %||% "Thank you for rating this poster.")
+        p(submit_message() %||% "Thank you for rating this poster."),
+        tags$a(href = "./", class = "btn btn-primary", "Back to All Posters")
       ))
     }
+
+    info <- get_all_poster_info()
+    row <- info[info$poster_number == poster(), , drop = FALSE]
+    ttl <- if (nrow(row) && nzchar(trimws(row$title[1]))) row$title[1] else ""
+    auth <- if (nrow(row) && nzchar(trimws(row$authors[1]))) row$authors[1] else ""
 
     div(class = "card",
       h2("Symposium Poster Rating"),
       div(class = "poster-number", paste("Poster", poster())),
+      if (nzchar(ttl)) div(class = "poster-meta-title", ttl),
+      if (nzchar(auth)) div(class = "poster-meta-authors", auth),
       rating_scale("content_score", "Content"),
       rating_scale("presentation_score", "Presentation"),
       actionButton("submit_rating", "Submit Rating", class = "btn-primary"),
@@ -424,6 +526,46 @@ server <- function(input, output, session) {
     })
   })
 
+  output$poster_info_editor <- renderUI({
+    req(admin_ok())
+    info <- get_all_poster_info()
+    tagList(lapply(seq_len(N_POSTERS), function(p) {
+      row <- info[info$poster_number == p, , drop = FALSE]
+      ttl <- if (nrow(row)) row$title[1] else ""
+      auth <- if (nrow(row)) row$authors[1] else ""
+      div(class = "admin-poster-row",
+        tags$strong(paste("Poster", p)),
+        textInput(paste0("poster_title_", p), "Title", value = ttl),
+        textInput(paste0("poster_authors_", p), "Author(s)", value = auth)
+      )
+    }))
+  })
+
+  observeEvent(input$save_poster_info, {
+    req(admin_ok())
+    if (!db_ready()) {
+      output$poster_info_save_message <- renderUI(
+        div(class = "errorbox", "Database connection is not configured."))
+      return()
+    }
+    tryCatch({
+      for (p in seq_len(N_POSTERS)) {
+        db_save_poster_info(
+          p,
+          input[[paste0("poster_title_", p)]] %||% "",
+          input[[paste0("poster_authors_", p)]] %||% ""
+        )
+      }
+      output$poster_info_save_message <- renderUI(
+        div(style = "color:#237a3b;font-weight:700;margin-top:12px;",
+            "Poster information saved."))
+    }, error = function(e) {
+      output$poster_info_save_message <- renderUI(
+        div(class = "errorbox",
+            paste("Poster information could not be saved:", conditionMessage(e))))
+    })
+  })
+
   observeEvent(input$admin_login, {
     if (!nzchar(ADMIN_PASSWORD)) {
       output$admin_login_message <- renderUI(
@@ -497,6 +639,34 @@ server <- function(input, output, session) {
         dat$overall_score <- (dat$content_score + dat$presentation_score) / 2
       }
       write.csv(dat, file, row.names = FALSE)
+    }
+  )
+
+  output$download_directory_qr_pdf <- downloadHandler(
+    filename = function() "all_posters_QR_code.pdf",
+    content = function(file) {
+      req(admin_ok())
+      base <- trimws(input$base_url %||% "")
+      validate(need(nzchar(base), "Enter the public app URL first."))
+      base <- sub("[?&]+$", "", base)
+      # The bare app URL is the All Posters directory.
+      base <- sub("[?&]poster=[0-9]+.*$", "", base)
+      code <- qrcode::qr_code(base)
+      qr <- as.matrix(code)
+      nr <- nrow(qr); nc <- ncol(qr)
+      pdf(file, width = 8.5, height = 11)
+      on.exit(dev.off(), add = TRUE)
+      par(mar = c(4, 4, 5, 4), xaxs = "i", yaxs = "i")
+      plot.new(); plot.window(xlim = c(0, nc), ylim = c(0, nr), asp = 1)
+      rect(0, 0, nc, nr, col = "white", border = NA)
+      black <- which(qr, arr.ind = TRUE)
+      if (nrow(black) > 0) {
+        rect(black[, "col"] - 1, nr - black[, "row"],
+             black[, "col"], nr - black[, "row"] + 1,
+             col = "black", border = NA)
+      }
+      title(main = "ALL POSTERS", cex.main = 2.2, font.main = 2)
+      mtext("Scan to choose and rate a poster", side = 1, line = 1, cex = 1.1)
     }
   )
 
