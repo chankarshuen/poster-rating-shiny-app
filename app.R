@@ -377,7 +377,7 @@ server <- function(input, output, session) {
         h2("Rating submitted"),
         h3(paste("Poster", poster())),
         p(submit_message() %||% "Thank you for rating this poster."),
-        tags$a(href = "./", class = "btn btn-primary", "Back to All Posters")
+        tags$a(href = DEFAULT_BASE_URL, class = "btn btn-primary", "Back to All Posters")
       ))
     }
 
